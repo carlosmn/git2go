@@ -127,6 +127,9 @@ func (v *Repository) LookupReference(name string) (*Reference, error) {
 }
 
 func (v *Repository) LookupRemote(name string) (*Remote, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 
