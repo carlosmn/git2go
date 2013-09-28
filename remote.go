@@ -32,6 +32,7 @@ const (
 type ProgressCb func([]byte) int
 type TransferProgressCb func(*TransferProgress) int
 type UpdateTipsCb func(string, *Oid, *Oid) int
+type CredentialAcquireCb func(url, username, int allowed) int
 
 type Remote struct {
 	Name string
@@ -240,4 +241,65 @@ func UrlIsSupported(url string) bool {
 	defer C.free(unsafe.Pointer(curl))
 
 	return C.git_remote_supported_url(curl) != 0
+}
+
+// Credential stuff
+
+type CredentialType int
+
+const (
+	CredentialUserpass             CredentialType = C.GIT_CREDTYPE_USERPASS_PLAINTEXT
+	CredentialSshKeyfilePassphrase                = C.GIT_CREDTYPE_SSH_KEYFILE_PASSPHRASE
+)
+
+type Credential struct {
+	Type CredentialType
+	ptr  *C.git_cred
+}
+
+func NewCredentialUserpass(user, pass string) (*Credential, error) {
+	cuser := C.CString(user)
+	defer C.free(unsafe.Pointer(cuser))
+	cpass := C.CString(pass)
+	defer C.free(unsafe.Pointer(cpass))
+
+	var ptr *C.git_cred
+	if ret := C.git_cred_userpass_plaintext_new(&ptr, cuser, cpass); ret < 0 {
+		return nil, LastError()
+	}
+
+	return newCredentialFromC(ptr), nil
+}
+
+func NewCredentialSshKeyfile(user, public, private, passphrase string) (*Credential, error) {
+	cuser := C.CString(user)
+	defer C.free(unsafe.Pointer(cuser))
+	cpublic := C.CString(public)
+	defer C.free(unsafe.Pointer(cpublic))
+	cprivate := C.CString(private)
+	defer C.free(unsafe.Pointer(cprivate))
+	cpass := C.CString(passphrase)
+	defer C.free(unsafe.Pointer(cpass))
+
+	var ptr *C.git_cred
+	if ret := C.git_cred_ssh_keyfile_passphrase_new(&ptr, cuser, cpublic, cprivate, cpass); ret < 0 {
+		return nil, LastError()
+	}
+
+	return newCredentialFromC(ptr), nil
+}
+
+func newCredentialFromC(ptr *C.git_cred) *Credential {
+	cred := &Credential{
+		Type: CredentialType(ptr.credtype),
+		ptr: ptr,
+	}
+
+	runtime.SetFinalizer(cred, (*Credential).Free)
+	return cred
+}
+
+func (c *Credential) Free() {
+	runtime.SetFinalizer(c, nil)
+	c.ptr.free(c.ptr)
 }
