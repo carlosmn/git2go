@@ -54,6 +54,24 @@ func Clone(url string, path string, options *CloneOptions) (*Repository, error) 
 	return repo, nil
 }
 
+func CloneInto(repo *Repository, remote *Remote, checkoutOpts *CheckoutOpts, branch string, signature *Signature) error {
+
+	cbranch := C.CString(branch)
+	defer C.free(unsafe.Pointer(cbranch))
+
+	csig := signature.toC()
+	defer C.git_signature_free(csig)
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	if err := C.git_clone_into(repo.ptr, remote.ptr, checkoutOpts.toC(), cbranch, csig); err < 0 {
+		return MakeGitError(err)
+	}
+
+	return nil
+}
+
 func populateCloneOptions(ptr *C.git_clone_options, opts *CloneOptions) {
 	C.git_clone_init_options(ptr, C.GIT_CLONE_OPTIONS_VERSION)
 
