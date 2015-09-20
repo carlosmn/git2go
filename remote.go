@@ -47,26 +47,34 @@ const (
 	ConnectDirectionPush  ConnectDirection = C.GIT_DIRECTION_PUSH
 )
 
-type TransportMessageCallback func(str string) ErrorCode
-type CompletionCallback func(RemoteCompletion) ErrorCode
-type CredentialsCallback func(url string, username_from_url string, allowed_types CredType) (ErrorCode, *Cred)
-type TransferProgressCallback func(stats TransferProgress) ErrorCode
-type UpdateTipsCallback func(refname string, a *Oid, b *Oid) ErrorCode
-type CertificateCheckCallback func(cert *Certificate, valid bool, hostname string) ErrorCode
-type PackbuilderProgressCallback func(stage int32, current, total uint32) ErrorCode
-type PushTransferProgressCallback func(current, total uint32, bytes uint) ErrorCode
-type PushUpdateReferenceCallback func(refname, status string) ErrorCode
+type RemoteCallbacks interface {
+	SidebandProgress(str string) ErrorCode
+	Completion(completion RemoteCompletion) ErrorCode
+	Credentials(url string, usernameFromUrl string, allowedTypes CredType) (ErrorCode, *Cred)
+	TransferProgress(stats TransferProgress) ErrorCode
+	UpdateTips(refname string, a *Oid, b *Oid) ErrorCode
+	CertificateCheck(cert *Certificate, valid bool, hostname string) ErrorCode
+	PackProgress(stage int32, current, total uint32) ErrorCode
+	PushTransferProgress(current, total uint32, bytes uint) ErrorCode
+	PushUpdateReference(refname, status string) ErrorCode
+}
 
-type RemoteCallbacks struct {
-	SidebandProgressCallback TransportMessageCallback
-	CompletionCallback
-	CredentialsCallback
-	TransferProgressCallback
-	UpdateTipsCallback
-	CertificateCheckCallback
-	PackProgressCallback PackbuilderProgressCallback
-	PushTransferProgressCallback
-	PushUpdateReferenceCallback
+type DefaultRemoteCallbacks struct {}
+
+func (v *DefaultRemoteCallbacks) SidebandProgress(_str string) ErrorCode {
+	return 0
+}
+
+func (v *DefaultRemoteCallbacks) Completion(completion RemoteCompletion) ErrorCode {
+	return 0
+}
+
+func (v *DefaultRemoteCallbacks) Credentials(url string, usernameFromUrl string, allowedTypes CredType) (ErrorCode, *Cred) {
+	return ErrPassthrough, nil
+}
+
+func (v *DefaultRemoteCallbacks) CertificateCheck(cert *Certificate, valid bool, hostname string) ErrorCode {
+	return ErrPassthrough
 }
 
 type FetchPrune uint
@@ -177,7 +185,7 @@ func untrackCalbacksPayload(callbacks *C.git_remote_callbacks) {
 	}
 }
 
-func populateRemoteCallbacks(ptr *C.git_remote_callbacks, callbacks *RemoteCallbacks) {
+func populateRemoteCallbacks(ptr *C.git_remote_callbacks, callbacks RemoteCallbacks) {
 	C.git_remote_init_callbacks(ptr, C.GIT_REMOTE_CALLBACKS_VERSION)
 	if callbacks == nil {
 		return
@@ -188,32 +196,23 @@ func populateRemoteCallbacks(ptr *C.git_remote_callbacks, callbacks *RemoteCallb
 
 //export sidebandProgressCallback
 func sidebandProgressCallback(_str *C.char, _len C.int, data unsafe.Pointer) int {
-	callbacks := pointerHandles.Get(data).(*RemoteCallbacks)
-	if callbacks.SidebandProgressCallback == nil {
-		return 0
-	}
+	callbacks := pointerHandles.Get(data).(RemoteCallbacks)
 	str := C.GoStringN(_str, _len)
-	return int(callbacks.SidebandProgressCallback(str))
+	return int(callbacks.SidebandProgress(str))
 }
 
 //export completionCallback
 func completionCallback(completion_type C.git_remote_completion_type, data unsafe.Pointer) int {
-	callbacks := pointerHandles.Get(data).(*RemoteCallbacks)
-	if callbacks.CompletionCallback == nil {
-		return 0
-	}
-	return int(callbacks.CompletionCallback(RemoteCompletion(completion_type)))
+	callbacks := pointerHandles.Get(data).(RemoteCallbacks)
+	return int(callbacks.Completion(RemoteCompletion(completion_type)))
 }
 
 //export credentialsCallback
 func credentialsCallback(_cred **C.git_cred, _url *C.char, _username_from_url *C.char, allowed_types uint, data unsafe.Pointer) int {
-	callbacks, _ := pointerHandles.Get(data).(*RemoteCallbacks)
-	if callbacks.CredentialsCallback == nil {
-		return 0
-	}
+	callbacks, _ := pointerHandles.Get(data).(RemoteCallbacks)
 	url := C.GoString(_url)
-	username_from_url := C.GoString(_username_from_url)
-	ret, cred := callbacks.CredentialsCallback(url, username_from_url, (CredType)(allowed_types))
+	usernameFromUrl := C.GoString(_username_from_url)
+	ret, cred := callbacks.Credentials(url, usernameFromUrl, (CredType)(allowed_types))
 	if cred != nil {
 		*_cred = cred.ptr
 	}
@@ -222,36 +221,22 @@ func credentialsCallback(_cred **C.git_cred, _url *C.char, _username_from_url *C
 
 //export transferProgressCallback
 func transferProgressCallback(stats *C.git_transfer_progress, data unsafe.Pointer) int {
-	callbacks, _ := pointerHandles.Get(data).(*RemoteCallbacks)
-	if callbacks.TransferProgressCallback == nil {
-		return 0
-	}
-	return int(callbacks.TransferProgressCallback(newTransferProgressFromC(stats)))
+	callbacks, _ := pointerHandles.Get(data).(RemoteCallbacks)
+	return int(callbacks.TransferProgress(newTransferProgressFromC(stats)))
 }
 
 //export updateTipsCallback
 func updateTipsCallback(_refname *C.char, _a *C.git_oid, _b *C.git_oid, data unsafe.Pointer) int {
-	callbacks, _ := pointerHandles.Get(data).(*RemoteCallbacks)
-	if callbacks.UpdateTipsCallback == nil {
-		return 0
-	}
+	callbacks, _ := pointerHandles.Get(data).(RemoteCallbacks)
 	refname := C.GoString(_refname)
 	a := newOidFromC(_a)
 	b := newOidFromC(_b)
-	return int(callbacks.UpdateTipsCallback(refname, a, b))
+	return int(callbacks.UpdateTips(refname, a, b))
 }
 
 //export certificateCheckCallback
 func certificateCheckCallback(_cert *C.git_cert, _valid C.int, _host *C.char, data unsafe.Pointer) int {
-	callbacks, _ := pointerHandles.Get(data).(*RemoteCallbacks)
-	// if there's no callback set, we need to make sure we fail if the library didn't consider this cert valid
-	if callbacks.CertificateCheckCallback == nil {
-		if _valid == 1 {
-			return 0
-		} else {
-			return C.GIT_ECERTIFICATE
-		}
-	}
+	callbacks, _ := pointerHandles.Get(data).(RemoteCallbacks)
 	host := C.GoString(_host)
 	valid := _valid != 0
 
@@ -279,39 +264,25 @@ func certificateCheckCallback(_cert *C.git_cert, _valid C.int, _host *C.char, da
 		return -1 // we don't support anything else atm
 	}
 
-	return int(callbacks.CertificateCheckCallback(&cert, valid, host))
+	return int(callbacks.CertificateCheck(&cert, valid, host))
 }
 
 //export packProgressCallback
 func packProgressCallback(stage C.int, current, total C.uint, data unsafe.Pointer) int {
-	callbacks, _ := pointerHandles.Get(data).(*RemoteCallbacks)
-
-	if callbacks.PackProgressCallback == nil {
-		return 0
-	}
-
-	return int(callbacks.PackProgressCallback(int32(stage), uint32(current), uint32(total)))
+	callbacks, _ := pointerHandles.Get(data).(RemoteCallbacks)
+	return int(callbacks.PackProgress(int32(stage), uint32(current), uint32(total)))
 }
 
 //export pushTransferProgressCallback
 func pushTransferProgressCallback(current, total C.uint, bytes C.size_t, data unsafe.Pointer) int {
-	callbacks, _ := pointerHandles.Get(data).(*RemoteCallbacks)
-	if callbacks.PushTransferProgressCallback == nil {
-		return 0
-	}
-
-	return int(callbacks.PushTransferProgressCallback(uint32(current), uint32(total), uint(bytes)))
+	callbacks, _ := pointerHandles.Get(data).(RemoteCallbacks)
+	return int(callbacks.PushTransferProgress(uint32(current), uint32(total), uint(bytes)))
 }
 
 //export pushUpdateReferenceCallback
 func pushUpdateReferenceCallback(refname, status *C.char, data unsafe.Pointer) int {
-	callbacks, _ := pointerHandles.Get(data).(*RemoteCallbacks)
-
-	if callbacks.PushUpdateReferenceCallback == nil {
-		return 0
-	}
-
-	return int(callbacks.PushUpdateReferenceCallback(C.GoString(refname), C.GoString(status)))
+	callbacks, _ := pointerHandles.Get(data).(RemoteCallbacks)
+	return int(callbacks.PushUpdateReference(C.GoString(refname), C.GoString(status)))
 }
 
 func RemoteIsValidName(name string) bool {
@@ -590,7 +561,7 @@ func populateFetchOptions(options *C.git_fetch_options, opts *FetchOptions) {
 	if opts == nil {
 		return
 	}
-	populateRemoteCallbacks(&options.callbacks, &opts.RemoteCallbacks)
+	populateRemoteCallbacks(&options.callbacks, opts.RemoteCallbacks)
 	options.prune = C.git_fetch_prune_t(opts.Prune)
 	options.update_fetchhead = cbool(opts.UpdateFetchhead)
 	options.download_tags = C.git_remote_autotag_option_t(opts.DownloadTags)
@@ -604,7 +575,7 @@ func populatePushOptions(options *C.git_push_options, opts *PushOptions) {
 
 	options.pb_parallelism = C.uint(opts.PbParallelism)
 
-	populateRemoteCallbacks(&options.callbacks, &opts.RemoteCallbacks)
+	populateRemoteCallbacks(&options.callbacks, opts.RemoteCallbacks)
 }
 
 // Fetch performs a fetch operation. refspecs specifies which refspecs
@@ -637,15 +608,15 @@ func (o *Remote) Fetch(refspecs []string, opts *FetchOptions, msg string) error 
 	return nil
 }
 
-func (o *Remote) ConnectFetch(callbacks *RemoteCallbacks) error {
+func (o *Remote) ConnectFetch(callbacks RemoteCallbacks) error {
 	return o.Connect(ConnectDirectionFetch, callbacks)
 }
 
-func (o *Remote) ConnectPush(callbacks *RemoteCallbacks) error {
+func (o *Remote) ConnectPush(callbacks RemoteCallbacks) error {
 	return o.Connect(ConnectDirectionPush, callbacks)
 }
 
-func (o *Remote) Connect(direction ConnectDirection, callbacks *RemoteCallbacks) error {
+func (o *Remote) Connect(direction ConnectDirection, callbacks RemoteCallbacks) error {
 	var ccallbacks C.git_remote_callbacks
 	populateRemoteCallbacks(&ccallbacks, callbacks)
 
@@ -728,7 +699,7 @@ func (o *Remote) PruneRefs() bool {
 	return C.git_remote_prune_refs(o.ptr) > 0
 }
 
-func (o *Remote) Prune(callbacks *RemoteCallbacks) error {
+func (o *Remote) Prune(callbacks RemoteCallbacks) error {
 	var ccallbacks C.git_remote_callbacks
 	populateRemoteCallbacks(&ccallbacks, callbacks)
 
